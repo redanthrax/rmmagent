@@ -80,7 +80,7 @@ const (
 	meshSvcName          = "mesh agent"
 	etcConfig            = "/etc/tacticalagent"
 	nixAgentDir          = "/opt/tacticalagent"
-	nixMeshDir           = "/opt/tacticalmesh"
+	nixMeshDir           = "/usr/local/mesh_services/meshagent"
 	nixAgentBin          = nixAgentDir + "/tacticalagent"
 	nixMeshAgentBin      = nixMeshDir + "/meshagent"
 	macPlistPath         = "/Library/LaunchDaemons/tacticalagent.plist"
