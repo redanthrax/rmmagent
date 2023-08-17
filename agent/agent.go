@@ -104,6 +104,11 @@ func New(logger *logrus.Logger, version string) *Agent {
 	winTempDir := defaultWinTmpDir
 	winRunAsUserTmpDir := defaultWinTmpDir
 
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = info.Hostname
+	}
+
 	var pybin string
 	switch runtime.GOARCH {
 	case "amd64":
@@ -201,7 +206,7 @@ func New(logger *logrus.Logger, version string) *Agent {
 	}
 
 	return &Agent{
-		Hostname:           info.Hostname,
+		Hostname:           hostname,
 		BaseURL:            ac.BaseURL,
 		AgentID:            ac.AgentID,
 		ApiURL:             ac.APIURL,
@@ -254,7 +259,7 @@ type CmdOptions struct {
 func (a *Agent) NewCMDOpts() *CmdOptions {
 	return &CmdOptions{
 		Shell:   "/bin/bash",
-		Timeout: 30,
+		Timeout: 60,
 	}
 }
 
@@ -322,38 +327,46 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 		}
 	}()
 
+	statusChan := make(chan gocmd.Status, 1)
 	// workaround for https://github.com/golang/go/issues/22315
-	for i := 0; i < 5; i++ {
-		<-envCmd.Start()
-
-		<-doneChan
-
-		status := envCmd.Status()
-
-		if errors.Is(status.Error, syscall.ETXTBSY) {
-			a.Logger.Errorln("CmdV2 syscall.ETXTBSY, retrying...")
-			time.Sleep(500 * time.Millisecond)
-		} else {
-			break
-		}
-	}
-
 	go func() {
-		select {
-		case <-doneChan:
+		for i := 0; i < 5; i++ {
+			finalStatus := <-envCmd.Start()
+			if errors.Is(finalStatus.Error, syscall.ETXTBSY) {
+				a.Logger.Errorln("CmdV2 syscall.ETXTBSY, retrying...")
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			statusChan <- finalStatus
 			return
-		case <-ctx.Done():
-			a.Logger.Debugf("Command timed out after %d seconds\n", c.Timeout)
-			pid := envCmd.Status().PID
-			a.Logger.Debugln("Killing process with PID", pid)
-			KillProc(int32(pid))
 		}
 	}()
 
+	var finalStatus gocmd.Status
+
+	select {
+	case <-ctx.Done():
+		a.Logger.Debugf("Command timed out after %d seconds\n", c.Timeout)
+		pid := envCmd.Status().PID
+		a.Logger.Debugln("Killing process with PID", pid)
+		KillProc(int32(pid))
+		finalStatus.Exit = 98
+		ret := CmdStatus{
+			Status: finalStatus,
+			Stdout: CleanString(stdoutBuf.String()),
+			Stderr: fmt.Sprintf("%s\nTimed out after %d seconds", CleanString(stderrBuf.String()), c.Timeout),
+		}
+		a.Logger.Debugf("%+v\n", ret)
+		return ret
+	case finalStatus = <-statusChan:
+		// done
+	}
+
 	// Wait for goroutine to print everything
 	<-doneChan
+
 	ret := CmdStatus{
-		Status: envCmd.Status(),
+		Status: finalStatus,
 		Stdout: CleanString(stdoutBuf.String()),
 		Stderr: CleanString(stderrBuf.String()),
 	}
